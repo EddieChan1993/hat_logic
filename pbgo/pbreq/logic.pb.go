@@ -1778,6 +1778,7 @@ type GameCtx struct {
 	ctx        context.Context
 	apiFunc    map[string]interface{}
 	playerInfo *PlayerInfo
+	wg         *sync.WaitGroup
 }
 
 type TaskFn = func()
@@ -1795,7 +1796,22 @@ func NewGameCtx(childCtx context.Context) *GameCtx {
 		ctx:        childCtx,
 		apiFunc:    make(map[string]interface{}),
 		playerInfo: &PlayerInfo{},
+		wg:         &sync.WaitGroup{},
 	}
+}
+
+func (this_ *GameCtx) GoRun(fn func(ctx context.Context)) {
+	this_.wg.Add(1)
+	go func() {
+		defer func() {
+			this_.wg.Done()
+		}()
+		fn(this_.ctx)
+	}()
+}
+
+func (this_ *GameCtx) WaitWg() {
+	this_.wg.Wait()
 }
 
 //InitModAfter 初始化之后执行（此时所有的模块已经全部初始化完成）

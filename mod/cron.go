@@ -4,6 +4,7 @@ package mod
 玩家定时任务相关
 */
 import (
+	"context"
 	"git.dhgames.cn/svr_comm/kite/utils/klog"
 	"google.golang.org/protobuf/proto"
 	"hat_logic/core/cst"
@@ -47,7 +48,7 @@ func (c *CronTasks) Push(grp, cmd cst.GrpIdTyp, msg proto.Message) {
 }
 
 func (c *CronTasks) NewTask(cronTick time.Duration, fn pbreq.TaskFn) {
-	go func() {
+	c.GoRun(func(ctx context.Context) {
 		ticker := time.NewTicker(cronTick)
 		defer func() {
 			if panicErr := recover(); panicErr != nil {
@@ -64,7 +65,7 @@ func (c *CronTasks) NewTask(cronTick time.Duration, fn pbreq.TaskFn) {
 				c.GameCtx.SendTask(fn)
 			}
 		}
-	}()
+	})
 }
 
 //========================mod base========================//

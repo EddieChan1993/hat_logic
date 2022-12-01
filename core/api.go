@@ -128,6 +128,7 @@ func KickByRoleId(roleId cst.RoleId) error {
 	}
 	oldPlayer.kickPlayer(cst.KickGMKick)
 	oldPlayer.closePlayer(cst.SignalOnlyExit)
+	oldPlayer.gameCtx.WaitWg()
 	<-oldPlayer.ctx.Done() //ctx关闭，证明 信号已经完全处理完成
 	klog.Warnf("===== %s 被 GM 踢下线 =====", oldPlayer.gameCtx.Log())
 	return nil
@@ -152,6 +153,7 @@ func KickBySid(sid cst.DeInt) {
 			klog.Infof("%s batchClosePlayer start", player.gameCtx.Log())
 			player.kickPlayer(cst.KickGMStopSvr)
 			player.closePlayer(cst.SignalExitWithSaveDb)
+			player.gameCtx.WaitWg()
 			<-player.ctx.Done() //ctx关闭，证明 信号已经完全处理完成
 			klog.Infof("%s batchClosePlayer end", player.gameCtx.Log())
 		}
@@ -177,6 +179,7 @@ func KickBeforeHotUpdate() {
 			klog.Infof("%s batchClosePlayer start", player.gameCtx.Log())
 			player.kickPlayer(cst.KickToHotUpdate)
 			player.closePlayer(cst.SignalExitWithSaveDb)
+			player.gameCtx.WaitWg()
 			<-player.ctx.Done() //ctx关闭，证明 信号已经完全处理完成
 			klog.Infof("%s batchClosePlayer end", player.gameCtx.Log())
 		}

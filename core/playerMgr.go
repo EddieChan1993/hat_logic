@@ -54,6 +54,7 @@ func (this_ *TPlayerMgr) batchClosePlayer() {
 			klog.Infof("%s batchClosePlayer start", player.gameCtx.Log())
 			player.kickPlayer(cst.KickStopSvr)
 			player.closePlayer(cst.SignalExitWithSaveDb)
+			player.gameCtx.WaitWg()
 			<-player.ctx.Done() //ctx关闭，证明 信号已经完全处理完成
 			klog.Infof("%s batchClosePlayer end", player.gameCtx.Log())
 		}

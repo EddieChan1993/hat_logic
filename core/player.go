@@ -411,9 +411,9 @@ func (this_ *Player) online() {
 	this_.ticker.Reset(this_.randSaveDbTickerTime())
 	gdbRsp, err := rpc.RoleOnline(this_.roleId)
 	if err != nil {
-		klog.Error(this_.gameCtx.Log(), "err", err)
+		klog.Panic(this_.gameCtx.Log(), "err", err)
 	} else if gdbRsp.ErrNo != 0 {
-		klog.Error(this_.gameCtx.Log(), "gdbErr", gdbRsp.ErrMsg)
+		klog.Panic(this_.gameCtx.Log(), "gdbErr", gdbRsp.ErrMsg)
 	}
 	klog.Infof("%s 玩家上线", this_.gameCtx.Log())
 }
