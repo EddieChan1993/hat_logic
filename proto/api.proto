@@ -1,0 +1,51 @@
+syntax = "proto3";
+option go_package = "./pbgo/pbapi";
+
+//根据roleId，提玩家下线
+message ReqKickByRoleId{
+  int64 roleId = 1;
+}
+
+message RspKickByRoleId{
+  int32 status = 1;
+  string errMsg = 2;
+}
+
+//根据sid，提玩家下线
+message ReqKickBySid{
+  int32 sid = 1;
+}
+
+message RspKickBySid{
+  int32 status = 1;
+  string errMsg = 2;
+}
+
+//获取玩家信息
+message ReqGetRoleData{
+  int64 roleId = 1;
+}
+
+message RspGetRoleData{
+  int32 status = 1;
+  string errMsg = 2;
+  string data = 3;
+}
+
+//设置玩家
+message ReqSetRoleData{
+  int64 roleId = 1;
+  string data = 2;
+}
+
+message RspSetRoleData{
+  int32 status = 1;
+  string errMsg = 2;
+}
+
+service GmpApi{
+  rpc KickByRoleId(ReqKickByRoleId) returns(RspKickByRoleId);//根据roleId，提玩家下线
+  rpc KickBySid(ReqKickBySid) returns(RspKickBySid);//根据sid，提玩家下线
+  rpc GetRoleData(ReqGetRoleData) returns(RspGetRoleData);//获取玩家信息
+  rpc SetRoleData(ReqSetRoleData) returns(RspSetRoleData);//设置玩家
+}

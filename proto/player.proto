@@ -1,0 +1,107 @@
+syntax = "proto3";
+import "proto/comm.proto";
+option go_package = "./pbgo/pbdb";
+
+message RoleData{
+  LeaderMgr leaderMgr = 1;                      //主角
+  HeroMgr heroMgr = 2;                    //英雄数据
+  BagMgr bagMgr = 3;                            //背包
+  LevelMgr levelMgr = 6;                        //关卡
+  TalentMgr talentMgr = 8;                   //天赋
+  BuildingMgr buildingMgr = 9;                //建筑系统
+  ArtifactMgr artifactMgr = 10;                //天赋系统
+  MercenaryMgr mercenaryMgr = 11;                //佣兵系统
+  SkillMgr skillMgr = 12;                //技能
+  InstanceMgr instanceMgr = 13;           //副本
+  WarriorOrderMgr warriorOrderMgr = 14;//勇士令
+  InitialChargeMgr initialChargeMgr = 15;//首充
+  MonthCardMgr monthCardMgr = 16;//月卡
+  GachaMgr gachaMgr = 17;//召唤
+  ShopMgr shopMgr = 18;//商店
+  DiamondShopMgr diamondShopMgr = 19;//钻石商店
+  RoleMgr roleMgr = 20;
+  LoginGiftMgr LoginGiftMgr = 21;//登陆礼包
+  DailyTaskMgr DailyTaskMgr = 22;//每日任务
+}
+
+message RoleMgr{
+  Setting Setting = 1;//设置
+  ExtStatus extStatus = 2;//玩家附加状态
+}
+//英雄
+message HeroMgr {
+  map<int32, Hero> heroes = 1;          //英雄数据 k-hero表id
+}
+
+//背包
+message BagMgr {
+  map<int32, int64> items = 1;        //道具
+  map<int32, Equip> equips = 2;        // 每个装备单独ID
+  int32 maxEqId = 3;//装备自增id
+}
+
+//天赋
+message TalentMgr{
+  map<int32, Talent>talents = 1; //天赋 k-天赋唯一id（流水id）
+  map<int32, int32> points = 3;//天赋点数 k-天赋的类型id v-消耗点数
+  int32 resetNum = 4;//重置次数
+}
+
+//关卡
+message LevelMgr{
+  int32 monsterLevelMax = 2;//打赢的最高播次
+  int32 levelPkId = 3;//关卡连续性id
+  int64 settleAt = 4;//最近一次结算时间
+}
+
+//主角
+message LeaderMgr{
+  int32 id = 1;                  //主角id
+  int32 lv = 2;                  //主角等级
+  map<int32, int32> equip = 3;//穿在身上的装备 k-部位 v-装备id
+  repeated int32 skillIds = 4; //装备的技能id
+  Mp mp = 5;//mp
+}
+
+//领地系统
+message BuildingMgr{
+  LordsMansion lordsMansion = 1;//领主府
+  int32 workerTotal = 2;//拥有的工人总数
+  map<int32, BuildingRes> buildingRes = 4;//资源建筑
+  int32 workerBuyNums = 5;//工人购买此时
+  int64 lastRefreshAt = 6;//最近刷新时间
+}
+
+//神器
+message ArtifactMgr{
+  map<int32, Artifact>artifact = 1;//拥有的神器，k-神器id，v-神器具体信息
+  repeated ArtifactSummoningSlot slots = 2;//召唤界面信息
+  int32 refreshNums = 3;//刷新次数
+}
+
+//佣兵系统
+message MercenaryMgr{
+  map<int32, Mercenary>  MercenaryAll = 1;//佣兵，k-位置，v-佣兵信息
+  int32 lastRefreshWeek = 3;//最近刷新的周
+  int32 finishDrawTaskNums = 4;//完成的任务并且已经领取
+  repeated int32 drawWeekGift = 5;//已经领取的周任务礼盒
+  int32 refreshTimes = 6;//刷新佣兵槽次数
+}
+
+//副本
+message InstanceMgr{
+  map<int32, InsClimbTower>climbTower = 1;//爬塔玩法
+  InsBoss boss = 2;//Boss玩法
+}
+
+//登陆礼包
+message LoginGiftMgr{
+  map<int32, int64> drawGift = 1;//已经领取的
+  int64 firstLoginAt = 2;//首次登陆
+}
+
+//每日任务
+message DailyTaskMgr{
+  map<int32, DailyTaskPer>tasks = 1;//任务进度 k-任务id
+  int64 lastRefreshAt = 2;//最近一次属性
+}
