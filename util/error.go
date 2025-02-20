@@ -1,11 +1,11 @@
 package util
 
 import (
-	"git.dhgames.cn/svr_comm/kite/utils/klog"
+	klog "git.dhgames.cn/svr_comm/gcore/glog"
 	"runtime"
 )
 
-//PanicStack 捕获recover的panic堆栈
+// PanicStack 捕获recover的panic堆栈
 func PanicStack() {
 	buf := make([]byte, 1<<10)
 	runtime.Stack(buf, true)

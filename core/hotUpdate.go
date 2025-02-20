@@ -4,14 +4,19 @@ import (
 	"bytes"
 	"encoding/gob"
 	"git.dhgames.cn/svr_comm/gclient/gate/pbgo"
-	"git.dhgames.cn/svr_comm/kite/utils/klog"
+	klog "git.dhgames.cn/svr_comm/gcore/glog"
 	"hat_logic/core/cst"
 	"hat_logic/pbgo/pbreq"
+	"hat_logic/tool/ants"
 	"hat_logic/util"
+	"sync"
 )
 
 //=====热更=====
 
+type AllTransData struct {
+	PlayersData []*TransData //所有玩家内存数据
+}
 type TransData struct {
 	Session  int64
 	RoleId   int64
@@ -33,14 +38,34 @@ func HotSendData(send func(data []byte)) {
 		playerMgr.Unlock()
 	}()
 	klog.Info("======HotSendData all start=====")
+	count := playerCount()
+	dataAll := make([]*TransData, count)
+	var err error
+	var wg sync.WaitGroup
+	var index cst.DeInt
 	playerMgr.players.Range(func(key, value interface{}) bool {
 		player, isOk := value.(*Player)
-		if isOk && player != nil {
+		if !isOk || player == nil {
+			return true
+		}
+		i := index
+		index++
+		wg.Add(1)
+		err = ants.AntsGo.Submit(func() {
+			defer func() {
+				if panicErr := recover(); panicErr != nil {
+					klog.Error(panicErr)
+					util.PanicStack()
+				}
+				wg.Done()
+				klog.Infof("%s send 完成", player.gameCtx.Log())
+			}()
 			klog.Infof("%s send 开始", player.gameCtx.Log())
 			oldStatus := player.status
 			player.closePlayer(cst.SignalOnlyExit)
+			klog.Infof("%s send Done 1", player.gameCtx.Log())
 			<-player.ctx.Done() //ctx关闭，证明 信号已经完全处理完成
-
+			klog.Infof("%s send Done 2", player.gameCtx.Log())
 			ins := &TransData{
 				Session:  player.sessionId,
 				RoleId:   player.gameCtx.GetRoleId(),
@@ -51,7 +76,6 @@ func HotSendData(send func(data []byte)) {
 				Client:   player.gameCtx.Client(),
 			}
 			//处理未完成消息，receive此时已经关闭，如果没有消息，receive应为空
-			//我：为什么此处不直接把receive消息去dispatch处理了，这样就可以不转移这消息数据了?（马：减少热更的迁移时间）
 			for msg := range player.receive {
 				if msg == nil {
 					klog.Infof("%s 消息为空", player.gameCtx.Log())
@@ -66,56 +90,92 @@ func HotSendData(send func(data []byte)) {
 				ins.ReadCh = append(ins.ReadCh, reaCh)
 				klog.Infof("%s 消息装填完成", player.gameCtx.Log())
 			}
-			byRes, err := encode(ins)
-			if err != nil {
-				klog.Error(player.gameCtx.Log(), err)
-				return true
-			}
-			send(byRes)
-			klog.Infof("%s send 完成", player.gameCtx.Log())
+			dataAll[i] = ins
+		})
+		if err != nil {
+			wg.Done()
+			klog.Error(err)
+			return true
 		}
 		return true
 	})
+	wg.Wait()
+	klog.Info("======HotSendData wait end=====")
+	//过滤0值
+	dataAllNew := filterNil(dataAll)
+	if len(dataAllNew) != 0 {
+		byRes, err := encode(&AllTransData{PlayersData: dataAllNew})
+		if err != nil {
+			klog.Error(err)
+			return
+		}
+		send(byRes)
+	}
 	klog.Info("======HotSendData all end=====")
 }
 
 func HotReceiveData(data []byte) {
-	req := &TransData{}
-	err := decode(data, req)
+	allData := &AllTransData{}
+	err := decode(data, allData)
 	if err != nil {
 		klog.Error(err)
 		return
 	}
-	err = HotUpdateLogin(&pbgo.LaunchReq{
-		Session: req.Session,
-		RoleId:  req.RoleId,
-		Sid:     req.Sid,
-		Client:  req.Client,
-	}, req.Status, req.DbBin, req.TempData)
-	if err != nil {
-		klog.Errorf("%d receive %v", req.RoleId, err)
-		return
-	}
-	//处理热更前未完成的消息
-	for i, ch := range req.ReadCh {
-		msg := &pbreq.ReqMsg{}
-		err = decode(ch, msg)
-		if err != nil {
-			klog.Errorf("%d decode", req.RoleId, err)
-			break
-		}
-		if msg == nil {
+	var wg sync.WaitGroup
+	klog.Infof("ReceiveData Players Count %d", len(allData.PlayersData))
+	for _, reqTmp := range allData.PlayersData {
+		if reqTmp == nil {
+			klog.Warnf("req nil")
 			continue
 		}
-		player, had := playerMgr.getPlayer(req.RoleId)
-		if !had {
-			klog.Warnf("%d getPlayer none", req.RoleId)
-			break
+		req := reqTmp
+		wg.Add(1)
+		err = ants.AntsGo.Submit(func() {
+			defer func() {
+				if panicErr := recover(); panicErr != nil {
+					klog.Error(panicErr)
+					util.PanicStack()
+				}
+				wg.Done()
+			}()
+			err = HotUpdateLogin(&pbgo.LaunchReq{
+				Session: req.Session,
+				RoleId:  req.RoleId,
+				Sid:     req.Sid,
+				Client:  req.Client,
+			}, req.Status, req.DbBin, req.TempData)
+			if err != nil {
+				klog.Errorf("%d receive %v", req.RoleId, err)
+				return
+			}
+			//处理热更前未完成的消息
+			for i, ch := range req.ReadCh {
+				msg := &pbreq.ReqMsg{}
+				err = decode(ch, msg)
+				if err != nil {
+					klog.Errorf("%d decode", req.RoleId, err)
+					break
+				}
+				if msg == nil {
+					continue
+				}
+				player, had := playerMgr.getPlayer(req.RoleId)
+				if !had {
+					klog.Warnf("%d getPlayer none", req.RoleId)
+					break
+				}
+				player.receive <- pbreq.NewReqMsg(msg.GetGrpId(), msg.GetCmdId(), msg.GetData())
+				klog.Infof("%d 消息补发 %d 完成", req.RoleId, i)
+			}
+			klog.Infof("%d receive 完成", req.RoleId)
+		})
+		if err != nil {
+			klog.Error(err)
+			wg.Done()
+			continue
 		}
-		player.receive <- pbreq.NewReqMsg(msg.GetGrpId(), msg.GetCmdId(), msg.GetData())
-		klog.Infof("%d 消息补发 %d 完成", req.RoleId, i)
 	}
-	klog.Infof("%d receive 完成", req.RoleId)
+	wg.Wait()
 	return
 }
 
@@ -137,4 +197,26 @@ func decode(data []byte, m interface{}) error {
 		return err
 	}
 	return nil
+}
+
+// playerCount 进程管理中玩家数量
+func playerCount() cst.DeInt {
+	var count cst.DeInt
+	playerMgr.players.Range(func(key, value interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
+// filterNil 过滤掉0值
+func filterNil(data []*TransData) []*TransData {
+	dataAllNew := make([]*TransData, 0, len(data))
+	for i, per := range data {
+		if per == nil {
+			continue
+		}
+		dataAllNew = append(dataAllNew, data[i])
+	}
+	return dataAllNew
 }

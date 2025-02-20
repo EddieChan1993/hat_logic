@@ -2,8 +2,9 @@ package core
 
 import (
 	"context"
-	"git.dhgames.cn/svr_comm/kite/utils/klog"
+	klog "git.dhgames.cn/svr_comm/gcore/glog"
 	"hat_logic/core/cst"
+	"hat_logic/tool/ants"
 	"hat_logic/util"
 	"sync"
 	"sync/atomic"
@@ -11,7 +12,7 @@ import (
 
 //==================== playerMgr ====================//
 
-//TPlayerMgr 管理player
+// TPlayerMgr 管理player
 type TPlayerMgr struct {
 	sync.RWMutex
 	onlinePlayers cst.DeInt          //在线人数
@@ -31,14 +32,14 @@ func InitPlayerMgr() {
 	}
 }
 
-//stopServer 关闭playerMgr
+// stopServer 关闭playerMgr
 func (this_ *TPlayerMgr) stopServer() {
-	this_.batchClosePlayer()
+	this_.batchClosePlayer(cst.KickStopSvr, 0)
 	klog.Info("player 管理器关闭")
 }
 
-//batchClosePlayer 批量踢出玩家进程
-func (this_ *TPlayerMgr) batchClosePlayer() {
+// batchClosePlayer 批量踢出玩家进程
+func (this_ *TPlayerMgr) batchClosePlayer(reason string, sid int32) {
 	this_.Lock()
 	defer func() {
 		if panicErr := recover(); panicErr != nil {
@@ -47,23 +48,46 @@ func (this_ *TPlayerMgr) batchClosePlayer() {
 		}
 		this_.Unlock()
 	}()
-	klog.Info("======batchClosePlayer all start=====")
+	klog.Infof("======batchClosePlayer start===== %s sid %d players %d", reason, sid, this_.onlinePlayers)
+	var wg sync.WaitGroup
+	var err error
 	this_.players.Range(func(key, value interface{}) bool {
 		player, isOk := value.(*Player)
-		if isOk && player != nil {
+		if !isOk || player == nil {
+			return true
+		}
+		if sid != 0 && player.gameCtx.GetSid() != sid {
+			//sid=0代表，全服踢
+			return true
+		}
+		wg.Add(1)
+		err = ants.AntsGo.Submit(func() {
+			defer func() {
+				if panicErr := recover(); panicErr != nil {
+					klog.Error(panicErr)
+					util.PanicStack()
+				}
+				wg.Done()
+			}()
 			klog.Infof("%s batchClosePlayer start", player.gameCtx.Log())
-			player.kickPlayer(cst.KickStopSvr)
+			player.kickPlayer(reason)
 			player.closePlayer(cst.SignalExitWithSaveDb)
 			player.gameCtx.WaitWg()
 			<-player.ctx.Done() //ctx关闭，证明 信号已经完全处理完成
 			klog.Infof("%s batchClosePlayer end", player.gameCtx.Log())
+		})
+		if err != nil {
+			wg.Done()
+			klog.Error(err)
+			return true
 		}
 		return true
 	})
-	klog.Info("======batchClosePlayer all end=====")
+	wg.Wait()
+	klog.Infof("======batchClosePlayer end===== %s sid %d players %d", reason, sid, this_.onlinePlayers)
 }
 
-//addPlayer 添加player
+// addPlayer 添加player
 func (this_ *TPlayerMgr) addPlayer(roleId int64, p *Player) (player *Player, loaded bool) {
 	old, has := this_.players.LoadOrStore(roleId, p)
 	if has {
@@ -73,7 +97,7 @@ func (this_ *TPlayerMgr) addPlayer(roleId int64, p *Player) (player *Player, loa
 	return old.(*Player), false
 }
 
-//delPlayer 删除player
+// delPlayer 删除player
 func (this_ *TPlayerMgr) delPlayer(roleId int64) {
 	old, had := this_.players.Load(roleId)
 	if !had {
@@ -86,7 +110,7 @@ func (this_ *TPlayerMgr) delPlayer(roleId int64) {
 	klog.Infof("%s 删除注册", oldPlayer.gameCtx.Log())
 }
 
-//delForcePlayer 强制删除player
+// delForcePlayer 强制删除player
 func (this_ *TPlayerMgr) delForcePlayer(roleId int64) {
 	old, had := this_.players.LoadAndDelete(roleId)
 	if !had {
@@ -99,7 +123,7 @@ func (this_ *TPlayerMgr) delForcePlayer(roleId int64) {
 	klog.Infof("%s 删除注册", oldPlayer.gameCtx.Log())
 }
 
-//getPlayer 获取player
+// getPlayer 获取player
 func (this_ *TPlayerMgr) getPlayer(roleId int64) (*Player, bool) {
 	this_.RLock()
 	defer this_.RUnlock()
@@ -110,11 +134,14 @@ func (this_ *TPlayerMgr) getPlayer(roleId int64) (*Player, bool) {
 	return nil, false
 }
 
-//countOnlinePlayers 记录系统当前人数
+// countOnlinePlayers 记录系统当前人数
 func (this_ *TPlayerMgr) countOnlinePlayers(delets cst.DeInt) {
 	now := atomic.AddInt32(&this_.onlinePlayers, delets)
 	if now < 0 {
 		atomic.StoreInt32(&this_.onlinePlayers, 0)
 	}
 	klog.Infof("当前人数 %d", now)
+	//if now >= 4000 {
+	//klog.Warnf("当前节点人数超过上线 %d", now)
+	//}
 }

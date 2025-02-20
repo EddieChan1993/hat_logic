@@ -11,6 +11,7 @@ require (
 	github.com/go-resty/resty/v2 v2.7.0
 	github.com/golang/protobuf v1.5.2
 	github.com/json-iterator/go v1.1.11
+	github.com/panjf2000/ants/v2 v2.11.1
 	google.golang.org/protobuf v1.28.1
 )
 
@@ -33,5 +34,6 @@ require (
 	go.uber.org/multierr v1.6.0 // indirect
 	go.uber.org/zap v1.23.0 // indirect
 	golang.org/x/net v0.1.0 // indirect
+	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.1.0 // indirect
 )

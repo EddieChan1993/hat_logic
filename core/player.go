@@ -4,8 +4,8 @@ import (
 	"context"
 	"git.dhgames.cn/svr_comm/gclient/gate/pbgo"
 	gdbpb "git.dhgames.cn/svr_comm/gclient/gdb/pbgo"
+	klog "git.dhgames.cn/svr_comm/gcore/glog"
 	"git.dhgames.cn/svr_comm/kite"
-	"git.dhgames.cn/svr_comm/kite/utils/klog"
 	"google.golang.org/protobuf/proto"
 	"hat_logic/core/cst"
 	"hat_logic/pbgo/pbdb"
@@ -20,33 +20,35 @@ import (
 const maxReceiveCh = 3
 
 type Player struct {
-	receive      chan *pbreq.ReqMsg          //消息收发通道
-	playerSignal chan cst.PlayerSignalTyp    //系统内部踢出进程信号
-	ctx          context.Context             //ctx进程管理
-	cancel       context.CancelFunc          //ctx进程取消函数
-	roleId       cst.RoleId                  //玩家id
-	sessionId    cst.SessionId               //玩家sessionid
-	gameCtx      *pbreq.GameCtx              //模块之间公用的数据
-	modBase      []IModBase                  //基础模块集
-	modReqApi    map[cst.GrpIdTyp]IModReqApi //模块之间相互调用的api方法集
-	modTmpData   map[ModNameTyp]ITempDataMod //临时数据模块
-	modRole      IRoleMod
-	modDb        map[ModNameTyp]IModDb //DB模块集
-	ticker       *time.Ticker          //定时存储数据
-	status       cst.PlayerStatus      //玩家在线状态
+	receive       chan *pbreq.ReqMsg          //消息收发通道
+	rpcModFun     chan func()                 //调用logic服mod模块api
+	playerSignal  chan cst.PlayerSignalTyp    //系统内部踢出进程信号
+	ctx           context.Context             //ctx进程管理
+	cancel        context.CancelFunc          //ctx进程取消函数
+	roleId        cst.RoleId                  //玩家id
+	sessionId     cst.SessionId               //玩家sessionid
+	gameCtx       *pbreq.GameCtx              //模块之间公用的数据
+	modBase       []IModBase                  //基础模块集
+	modReqApi     map[cst.GrpIdTyp]IModReqApi //模块之间相互调用的api方法集
+	modTmpData    map[ModNameTyp]ITempDataMod //临时数据模块
+	modRoleHandle IRoleHandleMod              //玩家事件
+	modDb         map[ModNameTyp]IModDb       //DB模块集
+	ticker        *time.Ticker                //定时存储数据
+	status        cst.PlayerStatus            //玩家在线状态
 }
 
 func NewPlayer(ctx context.Context, req *pbgo.LaunchReq) *Player {
 	childCtx, childCancel := context.WithCancel(ctx)
 	playerIns := &Player{
 		receive:      make(chan *pbreq.ReqMsg, maxReceiveCh),
+		rpcModFun:    make(chan func(), maxReceiveCh),
 		ctx:          childCtx,
 		cancel:       childCancel,
 		roleId:       req.RoleId,
 		sessionId:    req.Session,
 		modReqApi:    map[cst.GrpIdTyp]IModReqApi{},
 		gameCtx:      pbreq.NewGameCtx(childCtx),
-		playerSignal: make(chan cst.PlayerSignalTyp, 1),
+		playerSignal: make(chan cst.PlayerSignalTyp, 3),
 	}
 	playerIns.ticker = time.NewTicker(playerIns.randSaveDbTickerTime())
 	playerIns.gameCtx.SetPlayerInfo(&pbreq.PlayerInfo{
@@ -59,7 +61,7 @@ func NewPlayer(ctx context.Context, req *pbgo.LaunchReq) *Player {
 	return playerIns
 }
 
-//run 运行玩家worker进程
+// run 运行玩家worker进程
 func (this_ *Player) run() {
 	defer func() {
 		if panicErr := recover(); panicErr != nil {
@@ -78,9 +80,12 @@ func (this_ *Player) run() {
 	for {
 		select {
 		case signalId := <-this_.playerSignal:
-			klog.Infof("%s 玩家信号", this_.gameCtx.Log())
-			this_.playerSignalEvent(signalId)
-			return
+			klog.Infof("%s 玩家信号 %d", this_.gameCtx.Log(), signalId)
+			err := this_.playerSignalEvent(signalId)
+			if err == nil {
+				return
+			}
+			klog.Infof("%s 退出失败 %d", this_.gameCtx.Log(), signalId)
 		case <-this_.ticker.C:
 			//定时处理
 			klog.Infof("%s 定时信号", this_.gameCtx.Log())
@@ -90,6 +95,8 @@ func (this_ *Player) run() {
 				return
 			}
 			this_.handleMsg(msg)
+		case fn := <-this_.rpcModFun:
+			fn()
 		case fn, ok := <-this_.gameCtx.TaskFnCh():
 			if !ok {
 				return
@@ -99,7 +106,7 @@ func (this_ *Player) run() {
 	}
 }
 
-//timeEvent 定时任务事件处理
+// timeEvent 定时任务事件处理
 func (this_ *Player) timeEvent() {
 	switch atomic.LoadUint32(&this_.status) {
 	case cst.PlayerStatusLoginOut:
@@ -117,34 +124,33 @@ func (this_ *Player) closePlayer(sig cst.PlayerSignalTyp) {
 	if this_.status == cst.PlayerStatusClose {
 		return
 	}
-	atomic.StoreUint32(&this_.status, cst.PlayerStatusClose) //标记关闭状态
-	playerMgr.delPlayer(this_.roleId)                        //删除玩家管理
-	this_.playerSignal <- sig                                //发送停止信号
+	this_.playerSignal <- sig //发送停止信号
 }
 
-func (this_ *Player) playerSignalEvent(signalId cst.PlayerSignalTyp) {
+func (this_ *Player) playerSignalEvent(signalId cst.PlayerSignalTyp) error {
 	switch signalId {
 	case cst.SignalExitWithSaveDb:
-		this_.modRole.OfflineHandle()        //执行玩家离线事件
+		this_.modRoleHandle.OfflineHandle()  //执行玩家离线事件
 		err := rpc.RoleOffline(this_.roleId) //标记离线状态
 		if err != nil {
 			//不能返回
 			klog.Errorf("%s RoleOffline %v", this_.gameCtx.Log(), err)
 		}
-		//处理残留消息，提前close ch，range缓冲通道才能不阻塞
-		close(this_.receive)
-		this_.handleLeftMsg()
 		err = this_.saveDb()
 		if err != nil {
 			//不能返回
 			klog.Errorf("%s 落地失败 %v", this_.gameCtx.Log(), err)
+			return err
 		}
+		atomic.StoreUint32(&this_.status, cst.PlayerStatusClose) //标记关闭状态
+		playerMgr.delPlayer(this_.roleId)                        //删除玩家管理
 	case cst.SignalOnlyExit:
 		close(this_.receive)
 	}
+	return nil
 }
 
-//handleMsg 消息统一处理
+// handleMsg 消息统一处理
 func (this_ *Player) handleMsg(m *pbreq.ReqMsg) {
 	res := this_.dispatch(m)
 	if res == nil {
@@ -155,7 +161,7 @@ func (this_ *Player) handleMsg(m *pbreq.ReqMsg) {
 	//klog.Info(this_.gameCtx.Log(), "消息处理完成")
 }
 
-//handleLeftMsg 处理通道内未残留消息
+// handleLeftMsg 处理通道内未残留消息
 func (this_ *Player) handleLeftMsg() {
 	for msg := range this_.receive {
 		if msg == nil {
@@ -166,11 +172,12 @@ func (this_ *Player) handleLeftMsg() {
 	}
 }
 
-//dispatch 消息分发
+// dispatch 消息分发
 func (this_ *Player) dispatch(msg *pbreq.ReqMsg) proto.Message {
 	if msg.GetCmdId() == pbreq.CmdReqSyncId &&
 		msg.GetGrpId() == pbreq.GrpId10 {
 		//sync请求执行
+		this_.modRoleHandle.ReqHandle()
 		return this_.InitModSync()
 	} else {
 		//获取对应模块
@@ -191,12 +198,13 @@ func (this_ *Player) dispatch(msg *pbreq.ReqMsg) proto.Message {
 			return nil
 		}
 		msg.ProtoMsg = ReqPb
+		this_.modRoleHandle.ReqHandle()
 		modIns.ReqBefore()
 		return modIns.Dispatch(msg)
 	}
 }
 
-//InitModSync 初始化注册模块的sync方法
+// InitModSync 初始化注册模块的sync方法
 func (this_ *Player) InitModSync() proto.Message {
 	resp := &pbreq.RspSync{}
 	for _, modIns := range this_.modBase {
@@ -205,11 +213,11 @@ func (this_ *Player) InitModSync() proto.Message {
 	for _, modIns := range this_.modBase {
 		modIns.RspSync(resp)
 	}
-	klog.Infof("%s sync完成", this_.gameCtx.Log())
+	//klog.Infof("%s sync完成", this_.gameCtx.Log())
 	return resp
 }
 
-//callGate 发消息给gogate
+// callGate 发消息给gogate
 func (this_ *Player) callGate(grp, cmd cst.GrpIdTyp, msg proto.Message) {
 	data, err := proto.Marshal(msg)
 	if err != nil {
@@ -252,7 +260,7 @@ func (this_ *Player) loginOutWithoutSaveDb() {
 	}
 }
 
-//kickPlayer 踢玩家下线通知
+// kickPlayer 踢玩家下线通知
 func (this_ *Player) kickPlayer(reason string) error {
 	_, err := rpc.KickBySession(this_.sessionId, reason, kite.Cast)
 	if err != nil {
@@ -263,7 +271,7 @@ func (this_ *Player) kickPlayer(reason string) error {
 	return nil
 }
 
-//changeSessionId 改变sessionId
+// changeSessionId 改变sessionId
 func (this_ *Player) changeSessionId(sessionId cst.SessionId) {
 	if sessionId != this_.sessionId {
 		klog.Infof("%s 顶号 newSessionId %d oldSessionId %d", this_.gameCtx.Log(), sessionId, this_.sessionId)
@@ -272,7 +280,7 @@ func (this_ *Player) changeSessionId(sessionId cst.SessionId) {
 	}
 }
 
-//saveDb 数据落地
+// saveDb 数据落地
 func (this_ *Player) saveDb() error {
 	klog.Infof("%s 开始落地", this_.gameCtx.Log())
 	//数据落地
@@ -291,7 +299,7 @@ func (this_ *Player) saveDb() error {
 	return nil
 }
 
-//loadMod 加载数据到Mod内存
+// loadMod 加载数据到Mod内存
 func (this_ *Player) loadMod() error {
 	var err error
 	//获取db数据
@@ -306,11 +314,11 @@ func (this_ *Player) loadMod() error {
 		return err
 	}
 	this_.runInitModAfter()
-	this_.modRole.OnlineHandle()
+	this_.modRoleHandle.OnlineHandle()
 	return nil
 }
 
-//hotLoadMod 热更数据加载
+// hotLoadMod 热更数据加载
 func (this_ *Player) hotLoadMod(bin []byte) error {
 	var err error
 	//获取db数据
@@ -320,7 +328,7 @@ func (this_ *Player) hotLoadMod(bin []byte) error {
 		return err
 	}
 	this_.runInitModAfter()
-	this_.modRole.OnlineHandle()
+	this_.modRoleHandle.OnlineHandle()
 	return nil
 }
 
@@ -348,7 +356,7 @@ func (this_ *Player) dbToMemory(bin []byte) error {
 		modIns.InitMod(this_.gameCtx)
 
 		if modRoleIns, isOk := modMgr.isRoleMod(modIns); isOk {
-			this_.modRole = modRoleIns
+			this_.modRoleHandle = modRoleIns
 		}
 		if mod, isOk := modMgr.isTempDataMod(modIns); isOk {
 			modTmp[modName] = mod
@@ -375,7 +383,7 @@ func (this_ *Player) dbToMemory(bin []byte) error {
 	return nil
 }
 
-//modDataToDbBin mod数据转为db bin
+// modDataToDbBin mod数据转为db bin
 func (this_ *Player) modDataToDbBin() []byte {
 	allData := &pbdb.RoleData{}
 	for _, mod := range this_.modDb {
@@ -389,7 +397,7 @@ func (this_ *Player) modDataToDbBin() []byte {
 	return bin
 }
 
-//执行所有mod的InitModAfter方法
+// 执行所有mod的InitModAfter方法
 func (this_ *Player) runInitModAfter() {
 	for _, mod := range this_.modBase {
 		mod.InitModAfter()
@@ -430,7 +438,7 @@ func (this_ *Player) isOnline() bool {
 	return atomic.LoadUint32(&this_.status) == cst.PlayerStatusLogin
 }
 
-//reloadTempDataMod 重载临时数据到模块中
+// reloadTempDataMod 重载临时数据到模块中
 func (this_ *Player) reloadTempDataMod(tmpData map[ModNameTyp][]byte) {
 	if tmpData == nil {
 		return
@@ -440,7 +448,7 @@ func (this_ *Player) reloadTempDataMod(tmpData map[ModNameTyp][]byte) {
 	}
 }
 
-//getTempDataMod 保存临时数据
+// getTempDataMod 保存临时数据
 func (this_ *Player) getTempDataMod() map[ModNameTyp][]byte {
 	res := make(map[ModNameTyp][]byte)
 	for typ, mod := range this_.modTmpData {
@@ -449,7 +457,7 @@ func (this_ *Player) getTempDataMod() map[ModNameTyp][]byte {
 	return res
 }
 
-//restoreStatus 恢复状态
+// restoreStatus 恢复状态
 func (this_ *Player) restoreStatus(status cst.PlayerStatus) {
 	if atomic.CompareAndSwapUint32(&this_.status, cst.PlayerStatusLoginOut, cst.PlayerStatusLogin) {
 		klog.Infof("%s 热更上线 状态 %d", this_.gameCtx.Log(), status)
@@ -460,7 +468,7 @@ func (this_ *Player) restoreStatus(status cst.PlayerStatus) {
 	}
 }
 
-//randSaveDbTickerTime 存储间隔db间隔时间
+// randSaveDbTickerTime 存储间隔db间隔时间
 func (this_ *Player) randSaveDbTickerTime() time.Duration {
 	//离散数据存储间隔，防止热更后，玩家存储间隔时间过于集中
 	return time.Duration(cst.DeInt(cst.PlayerOnlineDbSaveTick)+util.RandInt32(60)) * time.Second
